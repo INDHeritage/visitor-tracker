@@ -11,8 +11,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "default_key")
+
 
 USERNAME = os.getenv("FLASK_USERNAME")
 PASSWORD = os.getenv("FLASK_PASSWORD")
