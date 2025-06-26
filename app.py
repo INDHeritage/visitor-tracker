@@ -99,7 +99,8 @@ def download_excel():
         return send_file(EXCEL_FILE, as_attachment=True)
     return "File not found", 404
 
-# Start background thread and Flask app
+# Start background thread always (works in Gunicorn too)
+threading.Thread(target=continuous_fetch, daemon=True).start()
+
 if __name__ == "__main__":
-    threading.Thread(target=continuous_fetch, daemon=True).start()
     app.run(debug=True)
