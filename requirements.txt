@@ -1,4 +1,6 @@
 Flask
+requests
 pandas
 openpyxl
-requests
+gunicorn
+python-dotenv
