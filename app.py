@@ -26,6 +26,10 @@ EXCEL_FILE = "visitor_data.xlsx"
 # Global storage for visitor data
 fetched_data = []
 
+@app.route("/test")
+def test():
+    return "✅ App is working!"
+
 # Fetch data from API
 def fetch_data():
     try:
