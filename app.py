@@ -12,6 +12,11 @@ import pytz
 import tempfile
 import shutil
 import hashlib
+import base64
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
 
 os.environ['TZ'] = 'Asia/Kolkata'
 
@@ -19,21 +24,56 @@ os.environ['TZ'] = 'Asia/Kolkata'
 # Load environment variables
 load_dotenv()
 
+def write_client_secrets():
+    try:
+        client_secrets_b64 = os.getenv("CLIENT_SECRETS_BASE64")
+        if not client_secrets_b64:
+            raise ValueError("Missing CLIENT_SECRETS_BASE64 environment variable.")
 
-# 🔹 Step 1: Google Drive Initialization
+        decoded_json = base64.b64decode(client_secrets_b64).decode("utf-8")
+        with open("client_secrets.json", "w") as f:
+            f.write(decoded_json)
+        print("✅ client_secrets.json decoded and written.")
+    except Exception as e:
+        print(f"❌ Failed to decode client_secrets.json: {e}")
+
+# Call it right after defining
+write_client_secrets()
+
+
+
 def init_drive():
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("mycreds.txt")
-    if gauth.credentials is None:
-        gauth.LocalWebserverAuth()
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-    gauth.SaveCredentialsFile("mycreds.txt")
-    return GoogleDrive(gauth)
+    try:
+        # Decode base64 service account credentials from environment variable
+        base64_creds = os.getenv("GOOGLE_CREDS_BASE64")
+        if not base64_creds:
+            raise ValueError("Missing GOOGLE_CREDS_BASE64 environment variable.")
 
-drive = init_drive()  # 🔹 Step 2: Create Google Drive instance
+        creds_json = base64.b64decode(base64_creds).decode("utf-8")
+
+        # Save to temporary file
+        with open("service_account.json", "w") as f:
+            f.write(creds_json)
+
+        # Define scopes for accessing Google Drive
+        SCOPES = ['https://www.googleapis.com/auth/drive.file']
+
+        # Load credentials and initialize service
+        creds = service_account.Credentials.from_service_account_file(
+            "service_account.json", scopes=SCOPES
+        )
+
+        service = build('drive', 'v3', credentials=creds)
+        print("✅ Google Drive service initialized.")
+        return service
+    except Exception as e:
+        print(f"❌ Failed to initialize Google Drive: {e}")
+        return None
+
+# ✅ Initialize the drive once here
+drive_service = init_drive()  # ✅ This must match what you're using in upload_to_drive()
+
+
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "default_key")
@@ -223,10 +263,6 @@ def continuous_fetch():
         time.sleep(60)
 
 
-
-
-
-
 @app.route("/dashboard")
 def dashboard():
     if "user" not in session:
@@ -412,26 +448,53 @@ last_uploaded_checksums = {}
 
 def upload_to_drive(file_path):
     global last_uploaded_checksums
+    if drive_service is None:
+        print("❌ Google Drive not initialized.")
+        return
+
     try:
+        # Calculate MD5 checksum to avoid re-uploading identical files
         checksum = file_checksum(file_path)
         if file_path in last_uploaded_checksums and last_uploaded_checksums[file_path] == checksum:
-            return  # Skip upload if unchanged
+            print(f"🔁 No changes in {file_path}, skipping upload.")
+            return
 
+        # Get just the filename, ensuring platform-independent formatting
         file_name = os.path.basename(file_path)
-        file_list = drive.ListFile({'q': f"title='{file_name}' and trashed=false"}).GetList()
 
-        if file_list:
-            file = file_list[0]
-            file.SetContentFile(file_path)
+        # Safely encode file name for query
+        safe_file_name = file_name.replace("'", "\\'")
+        query = f"name='{safe_file_name}' and trashed=false"
+
+        response = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        files = response.get('files', [])
+
+        # Prepare metadata and file for upload
+        file_metadata = {'name': file_name}
+        media = MediaFileUpload(file_path, resumable=True)
+
+        if files:
+            # Update existing file
+            file_id = files[0]['id']
+            drive_service.files().update(
+                fileId=file_id,
+                media_body=media
+            ).execute()
+            print(f"♻️ Updated: {file_path} (ID: {file_id})")
         else:
-            file = drive.CreateFile({'title': file_name})
-            file.SetContentFile(file_path)
+            # Upload new file
+            uploaded_file = drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            print(f"✅ Uploaded: {file_path} (ID: {uploaded_file.get('id')})")
 
-        file.Upload()
+        # Save latest checksum
         last_uploaded_checksums[file_path] = checksum
-        print(f"✅ Synced {file_path} to Google Drive.")
+
     except Exception as e:
-        print(f"❌ Google Drive sync failed: {e}")
+        print(f"❌ Upload to Drive failed: {e}")
 
 @app.route("/download-all")
 def download_all():
