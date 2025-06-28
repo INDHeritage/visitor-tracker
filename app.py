@@ -2,7 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, s
 import requests
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 import time
 from dotenv import load_dotenv
@@ -16,6 +16,7 @@ import base64
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import HttpRequest
 
 
 os.environ['TZ'] = 'Asia/Kolkata'
@@ -63,15 +64,20 @@ def init_drive():
             "service_account.json", scopes=SCOPES
         )
 
+        # ✅ Set default timeout for all Drive API requests (fix timeout errors)
+        HttpRequest.DEFAULT_TIMEOUT = 60  # in seconds (adjust if needed)
+
+        # Initialize the Drive service
         service = build('drive', 'v3', credentials=creds)
         print("✅ Google Drive service initialized.")
         return service
+
     except Exception as e:
         print(f"❌ Failed to initialize Google Drive: {e}")
         return None
 
-# ✅ Initialize the drive once here
-drive_service = init_drive()  # ✅ This must match what you're using in upload_to_drive()
+# ✅ Initialize Drive
+drive_service = init_drive() # ✅ This must match what you're using in upload_to_drive()
 
 
 
@@ -166,6 +172,9 @@ def save_users_to_excel(data):
     df = pd.DataFrame(data)
     df.drop_duplicates(inplace=True)
     safe_write_excel(df, EXCEL_USERS_FILE)
+    time.sleep(0.2)
+    upload_to_drive(EXCEL_USERS_FILE)
+
 
 
 @app.route("/download-users")
@@ -208,6 +217,10 @@ def save_to_excel(data):
     else:
         combined = df_new
     safe_write_excel(combined, EXCEL_ALL_FILE)
+    time.sleep(0.2)
+    upload_to_drive(EXCEL_ALL_FILE)
+
+
 
     # Save date-wise files
     for item in data:
@@ -223,6 +236,10 @@ def save_to_excel(data):
                 df_existing = pd.read_excel(file_path)
                 df_day = pd.concat([df_existing, df_day], ignore_index=True).drop_duplicates()
             safe_write_excel(df_day, file_path)
+            time.sleep(0.2)
+            upload_to_drive(file_path)
+
+
 
         except Exception as e:
             print(f"❌ Error saving daily log: {e}")
@@ -446,6 +463,7 @@ def file_checksum(path):
 last_uploaded_checksums = {}
 
 
+
 def upload_to_drive(file_path):
     global last_uploaded_checksums
     if drive_service is None:
@@ -459,30 +477,28 @@ def upload_to_drive(file_path):
             print(f"🔁 No changes in {file_path}, skipping upload.")
             return
 
-        # Get just the filename, ensuring platform-independent formatting
-        file_name = os.path.basename(file_path)
+        # ✅ Fix: Get clean file name only (not full path)
+        file_name = os.path.basename(file_path).replace("'", "\\'")
 
-        # Safely encode file name for query
-        safe_file_name = file_name.replace("'", "\\'")
-        query = f"name='{safe_file_name}' and trashed=false"
-
+        # ✅ Query Drive using only file name
+        query = f"name='{file_name}' and trashed=false"
         response = drive_service.files().list(q=query, fields="files(id, name)").execute()
         files = response.get('files', [])
 
-        # Prepare metadata and file for upload
-        file_metadata = {'name': file_name}
-        media = MediaFileUpload(file_path, resumable=True)
+        file_metadata = {'name': os.path.basename(file_path)}
+        media = MediaFileUpload(file_path, resumable=True, chunksize=256*1024)
+
 
         if files:
-            # Update existing file
+            # ✅ Fix: Force Drive to treat it as updated (set modifiedTime)
             file_id = files[0]['id']
             drive_service.files().update(
                 fileId=file_id,
-                media_body=media
+                media_body=media,
+                body={"modifiedTime": datetime.now(timezone.utc).isoformat()}  # 👈 KEY FIX
             ).execute()
             print(f"♻️ Updated: {file_path} (ID: {file_id})")
         else:
-            # Upload new file
             uploaded_file = drive_service.files().create(
                 body=file_metadata,
                 media_body=media,
@@ -490,11 +506,12 @@ def upload_to_drive(file_path):
             ).execute()
             print(f"✅ Uploaded: {file_path} (ID: {uploaded_file.get('id')})")
 
-        # Save latest checksum
+        # ✅ Save latest checksum after successful upload/update
         last_uploaded_checksums[file_path] = checksum
 
     except Exception as e:
         print(f"❌ Upload to Drive failed: {e}")
+
 
 @app.route("/download-all")
 def download_all():
@@ -503,6 +520,7 @@ def download_all():
     if os.path.exists(EXCEL_ALL_FILE):
         return send_file(EXCEL_ALL_FILE, as_attachment=True)
     return "File not found", 404
+
 
 # Start background fetch thread
 threading.Thread(target=continuous_fetch, daemon=True).start()
