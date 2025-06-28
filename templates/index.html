@@ -5,19 +5,62 @@
   <title>Visitor Dashboard</title>
   <meta http-equiv="refresh" content="60" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <style>
+    .circle {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background-color: #0d6efd;
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+      font-weight: bold;
+      margin: 0 auto;
+    }
+  </style>
 </head>
 <body class="bg-light">
   <div class="container mt-5">
-    <div class="d-flex justify-content-between align-items-center mb-3">
+
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
       <h2>📊 Website Visitor Logs</h2>
-      <div>
-        <a href="/download" class="btn btn-success">⬇️ Download Excel</a>
+      <div class="btn-group">
+        <a href="/download" class="btn btn-primary">📅 Filter by Date</a>
+        <a href="/download-all" class="btn btn-success">⬇️ Download All</a>
         <a href="/logout" class="btn btn-danger">Logout</a>
       </div>
     </div>
 
-    <div class="table-responsive">
-      <table class="table table-bordered table-striped table-hover">
+    <!-- Summary Section -->
+    <div class="row text-center mb-4">
+      <div class="col-md-4">
+        <div class="circle">{{ total_visits }}</div>
+        <div class="mt-2 fw-semibold">Total Visitors</div>
+      </div>
+      <div class="col-md-4">
+        <div class="card shadow-sm">
+          <div class="card-body p-2">
+            <div class="fw-semibold">💻 Desktop Users</div>
+            <h4>{{ device_counts.Desktop }}</h4>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card shadow-sm">
+          <div class="card-body p-2">
+            <div class="fw-semibold">📱 Mobile Users</div>
+            <h4>{{ device_counts.Mobile }}</h4>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Visitor Table -->
+    <div class="table-responsive shadow-sm rounded border bg-white">
+      <table class="table table-bordered table-striped table-hover m-0">
         <thead class="table-dark">
           <tr>
             <th>Email</th>
@@ -37,6 +80,11 @@
           {% endfor %}
         </tbody>
       </table>
+    </div>
+
+    <!-- Auto-refresh info -->
+    <div class="text-end text-muted mt-2">
+      Auto-refreshes every 60 seconds.
     </div>
   </div>
 </body>
