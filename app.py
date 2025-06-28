@@ -1,14 +1,39 @@
 from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash, render_template_string
 import requests
 import pandas as pd
-import datetime
 import os
+from datetime import datetime
 import threading
 import time
 from dotenv import load_dotenv
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+import pytz
+import tempfile
+import shutil
+import hashlib
+
+os.environ['TZ'] = 'Asia/Kolkata'
+
 
 # Load environment variables
 load_dotenv()
+
+
+# 🔹 Step 1: Google Drive Initialization
+def init_drive():
+    gauth = GoogleAuth()
+    gauth.LoadCredentialsFile("mycreds.txt")
+    if gauth.credentials is None:
+        gauth.LocalWebserverAuth()
+    elif gauth.access_token_expired:
+        gauth.Refresh()
+    else:
+        gauth.Authorize()
+    gauth.SaveCredentialsFile("mycreds.txt")
+    return GoogleDrive(gauth)
+
+drive = init_drive()  # 🔹 Step 2: Create Google Drive instance
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "default_key")
@@ -19,10 +44,16 @@ DATA_URL = "https://heritage-flask-app.onrender.com/admin/visits?password=Shad@!
 EXCEL_ALL_FILE = "visitor_data.xlsx"
 DATA_FOLDER = "visitor_logs"  # Folder for date-wise Excel files
 
+USER_DATA_URL = "https://heritage-flask-app.onrender.com/admin/users?password=Shad@!admin123"
+EXCEL_USERS_FILE = "user_data.xlsx"
+
+
 # Ensure log folder exists
 os.makedirs(DATA_FOLDER, exist_ok=True)
 
 fetched_data = []
+fetched_users = []
+
 
 @app.route("/test")
 def test():
@@ -34,49 +65,166 @@ def fetch_data():
         response.raise_for_status()
         data = response.json()
 
+        ist = pytz.timezone('Asia/Kolkata')
+        cleaned = []
+        seen = set()
+
         for d in data:
             try:
-                dt = datetime.datetime.fromisoformat(d['timestamp'])
-                d['timestamp'] = dt.strftime('%Y-%m-%d %H:%M:%S')
-            except:
-                pass
-        return data
+                # Normalize timestamp format
+                raw_ts = d['timestamp']
+                if 'T' in raw_ts:
+                    utc_dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                else:
+                    utc_dt = datetime.datetime.strptime(raw_ts, "%Y-%m-%d %H:%M:%S")
+
+                ist_dt = utc_dt.astimezone(ist)
+                formatted_ts = ist_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+                # Create a deduplication key (email, ip, timestamp, agent)
+                key = (d.get("email", "Guest"), d.get("ip", ""), formatted_ts, d.get("user_agent", ""))
+                if key not in seen:
+                    seen.add(key)
+                    cleaned.append({
+                        "email": d.get("email", "Guest"),
+                        "ip": d.get("ip", ""),
+                        "timestamp": formatted_ts,
+                        "user_agent": d.get("user_agent", "")
+                    })
+            except Exception as e:
+                print(f"⚠️ Error parsing timestamp: {e}")
+        return cleaned
     except Exception as e:
-        print(f"Error fetching data: {e}")
+        print(f"❌ Error fetching data: {e}")
         return []
 
-def save_to_excel(data):
-    # Save full data
-    df = pd.DataFrame(data)
-    df.to_excel(EXCEL_ALL_FILE, index=False)
+#Users
 
-    # Save date-wise
+def fetch_users():
+    try:
+        response = requests.get(USER_DATA_URL)
+        response.raise_for_status()
+        users = response.json()
+
+        cleaned_users = []
+        for u in users:
+            cleaned_users.append({
+                "email": u.get("email", ""),
+                "name": u.get("name", ""),
+                "phone": u.get("phone", ""),
+                "role": u.get("role", ""),
+                "created_at": u.get("created_at", "")
+            })
+
+        return cleaned_users
+    except Exception as e:
+        print(f"❌ Error fetching users: {e}")
+        return []
+
+
+def save_users_to_excel(data):
+    df = pd.DataFrame(data)
+    df.drop_duplicates(inplace=True)
+    safe_write_excel(df, EXCEL_USERS_FILE)
+
+
+@app.route("/download-users")
+def download_users():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    if os.path.exists(EXCEL_USERS_FILE):
+        return send_file(EXCEL_USERS_FILE, as_attachment=True)
+    return "No user file found", 404
+
+
+def safe_write_excel(df, path):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+            tmp_path = tmp.name
+        df.to_excel(tmp_path, index=False)  # Write after closing the file context
+        shutil.move(tmp_path, path)
+    except Exception as e:
+        print(f"❌ Failed writing Excel safely: {e}")
+
+
+
+def is_valid_excel(file_path):
+    try:
+        pd.read_excel(file_path, nrows=1)
+        return True
+    except Exception:
+        return False
+
+
+
+def save_to_excel(data):
+    df_new = pd.DataFrame(data)
+    df_new.drop_duplicates(inplace=True)
+
+    # Safe full data save
+    if os.path.exists(EXCEL_ALL_FILE) and is_valid_excel(EXCEL_ALL_FILE):
+        df_existing = pd.read_excel(EXCEL_ALL_FILE)
+        combined = pd.concat([df_existing, df_new], ignore_index=True).drop_duplicates()
+    else:
+        combined = df_new
+    safe_write_excel(combined, EXCEL_ALL_FILE)
+
+    # Save date-wise files
     for item in data:
         try:
-            ts = datetime.datetime.strptime(item['timestamp'], "%Y-%m-%d %H:%M:%S")
+            ts = datetime.strptime(item['timestamp'], "%Y-%m-%d %H:%M:%S")
             y, m, d = ts.strftime("%Y"), ts.strftime("%m"), ts.strftime("%d")
             path = os.path.join(DATA_FOLDER, y, m)
             os.makedirs(path, exist_ok=True)
             file_path = os.path.join(path, f"{d}.xlsx")
 
             df_day = pd.DataFrame([item])
-            if os.path.exists(file_path):
+            if os.path.exists(file_path) and is_valid_excel(file_path):
                 df_existing = pd.read_excel(file_path)
-                df_day = pd.concat([df_existing, df_day], ignore_index=True)
-            df_day.to_excel(file_path, index=False)
+                df_day = pd.concat([df_existing, df_day], ignore_index=True).drop_duplicates()
+            safe_write_excel(df_day, file_path)
+
         except Exception as e:
-            print(f"Error saving daily log: {e}")
+            print(f"❌ Error saving daily log: {e}")
 
 
 def continuous_fetch():
     global fetched_data
+    global fetched_users  # 👈 ADD THIS
+
+    last_uploaded = None
     while True:
         print("⏳ Auto-fetching visitor data...")
         data = fetch_data()
         if data and data != fetched_data:
             fetched_data = data
             save_to_excel(fetched_data)
+
+            # ✅ Upload visitors data to Google Drive
+            try:
+                upload_to_drive(EXCEL_ALL_FILE)
+                today = datetime.today().strftime("%Y/%m/%d")
+                day_file = os.path.join(DATA_FOLDER, *today.split("/")) + ".xlsx"
+                if os.path.exists(day_file):
+                    upload_to_drive(day_file)
+            except Exception as e:
+                print(f"❌ Upload failed: {e}")
+
+        # ✅ FETCH USERS DATA AND SAVE TO GLOBAL
+        users = fetch_users()
+        if users:
+            fetched_users = users  # 👈 UPDATE GLOBAL VARIABLE HERE
+            save_users_to_excel(users)
+            try:
+                upload_to_drive(EXCEL_USERS_FILE)
+            except Exception as e:
+                print(f"❌ Failed to upload users Excel: {e}")
+
         time.sleep(60)
+
+
+
+
 
 
 @app.route("/dashboard")
@@ -84,12 +232,10 @@ def dashboard():
     if "user" not in session:
         return redirect(url_for("login"))
 
-    # Compute total visits
     total_visits = len(fetched_data)
 
-    # Count by device type
+    # ✅ Device type breakdown
     device_counts = {"Desktop": 0, "Mobile": 0, "Other": 0}
-
     for visit in fetched_data:
         agent = visit.get("user_agent", "").lower()
         if "mobile" in agent:
@@ -99,10 +245,30 @@ def dashboard():
         else:
             device_counts["Other"] += 1
 
-    return render_template("dashboard.html",
-                           total_visits=total_visits,
-                           device_counts=device_counts)
+    # ✅ Load total users from Excel file
+    user_data = load_user_excel()
+    total_users = len(user_data) if user_data is not None else 0
 
+    return render_template("dashboard.html",
+                           data=fetched_data,
+                           total_visits=total_visits,
+                           device_counts=device_counts,
+                           total_users=total_users,
+                           current_time=get_kolkata_time())
+
+
+def load_user_excel():
+    try:
+        if os.path.exists(EXCEL_USERS_FILE):
+            return pd.read_excel(EXCEL_USERS_FILE)
+    except Exception as e:
+        print(f"❌ Could not read user file: {e}")
+    return None
+
+
+def get_kolkata_time():
+    india_tz = pytz.timezone("Asia/Kolkata")
+    return datetime.now(india_tz).strftime('%Y-%m-%d %H:%M:%S')
 
 
 @app.route("/", methods=["GET"])
@@ -113,7 +279,6 @@ def index():
 
     total_visits = len(fetched_data)
 
-    # Count by device type
     device_counts = {"Desktop": 0, "Mobile": 0, "Other": 0}
     for visit in fetched_data:
         agent = visit.get("user_agent", "").lower()
@@ -124,9 +289,14 @@ def index():
         else:
             device_counts["Other"] += 1
 
-    return render_template("index.html", data=fetched_data,
-                           total_visits=total_visits,
-                           device_counts=device_counts)
+    return render_template("index.html", 
+        data=fetched_data,
+        total_visits=len(fetched_data),
+        total_users=len(fetched_users),
+        device_counts=device_counts,
+        current_time=get_kolkata_time()
+)
+
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -231,6 +401,37 @@ def download_excel():
     </body>
     </html>
     """, years=years, months=months, days=days)
+
+
+def file_checksum(path):
+    with open(path, 'rb') as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+last_uploaded_checksums = {}
+
+
+def upload_to_drive(file_path):
+    global last_uploaded_checksums
+    try:
+        checksum = file_checksum(file_path)
+        if file_path in last_uploaded_checksums and last_uploaded_checksums[file_path] == checksum:
+            return  # Skip upload if unchanged
+
+        file_name = os.path.basename(file_path)
+        file_list = drive.ListFile({'q': f"title='{file_name}' and trashed=false"}).GetList()
+
+        if file_list:
+            file = file_list[0]
+            file.SetContentFile(file_path)
+        else:
+            file = drive.CreateFile({'title': file_name})
+            file.SetContentFile(file_path)
+
+        file.Upload()
+        last_uploaded_checksums[file_path] = checksum
+        print(f"✅ Synced {file_path} to Google Drive.")
+    except Exception as e:
+        print(f"❌ Google Drive sync failed: {e}")
 
 @app.route("/download-all")
 def download_all():

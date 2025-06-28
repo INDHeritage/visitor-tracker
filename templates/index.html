@@ -19,6 +19,9 @@
       font-weight: bold;
       margin: 0 auto;
     }
+    .circle.bg-success {
+      background-color: #198754 !important; /* Bootstrap green */
+    }
   </style>
 </head>
 <body class="bg-light">
@@ -36,11 +39,15 @@
 
     <!-- Summary Section -->
     <div class="row text-center mb-4">
-      <div class="col-md-4">
+      <div class="col-md-3">
         <div class="circle">{{ total_visits }}</div>
         <div class="mt-2 fw-semibold">Total Visitors</div>
       </div>
-      <div class="col-md-4">
+      <div class="col-md-3">
+        <div class="circle bg-success">{{ total_users }}</div>
+        <div class="mt-2 fw-semibold">Total Users</div>
+      </div>
+      <div class="col-md-3">
         <div class="card shadow-sm">
           <div class="card-body p-2">
             <div class="fw-semibold">💻 Desktop Users</div>
@@ -48,11 +55,23 @@
           </div>
         </div>
       </div>
-      <div class="col-md-4">
+      <div class="col-md-3">
         <div class="card shadow-sm">
           <div class="card-body p-2">
             <div class="fw-semibold">📱 Mobile Users</div>
             <h4>{{ device_counts.Mobile }}</h4>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Other Devices -->
+    <div class="row mb-4 justify-content-center">
+      <div class="col-md-3">
+        <div class="card shadow-sm">
+          <div class="card-body p-2 text-center">
+            <div class="fw-semibold">🖥️ Other Devices</div>
+            <h4>{{ device_counts.Other }}</h4>
           </div>
         </div>
       </div>
