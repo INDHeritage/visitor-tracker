@@ -17,7 +17,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import HttpRequest
-
+from googleapiclient.http import MediaIoBaseDownload
 
 os.environ['TZ'] = 'Asia/Kolkata'
 
@@ -57,7 +57,8 @@ def init_drive():
             f.write(creds_json)
 
         # Define scopes for accessing Google Drive
-        SCOPES = ['https://www.googleapis.com/auth/drive.file']
+        SCOPES = ['https://www.googleapis.com/auth/drive']
+
 
         # Load credentials and initialize service
         creds = service_account.Credentials.from_service_account_file(
@@ -216,33 +217,38 @@ def save_to_excel(data):
         combined = pd.concat([df_existing, df_new], ignore_index=True).drop_duplicates()
     else:
         combined = df_new
+
     safe_write_excel(combined, EXCEL_ALL_FILE)
     time.sleep(0.2)
     upload_to_drive(EXCEL_ALL_FILE)
 
+    # Save date-wise files (collect unique paths first)
+    date_file_paths = set()
 
-
-    # Save date-wise files
     for item in data:
         try:
             ts = datetime.strptime(item['timestamp'], "%Y-%m-%d %H:%M:%S")
             y, m, d = ts.strftime("%Y"), ts.strftime("%m"), ts.strftime("%d")
             path = os.path.join(DATA_FOLDER, y, m)
             os.makedirs(path, exist_ok=True)
-            file_path = os.path.join(path, f"{d}.xlsx")
+            file_path = os.path.join(path, f"visitor_{d}.xlsx")  # changed name here
 
             df_day = pd.DataFrame([item])
             if os.path.exists(file_path) and is_valid_excel(file_path):
                 df_existing = pd.read_excel(file_path)
                 df_day = pd.concat([df_existing, df_day], ignore_index=True).drop_duplicates()
             safe_write_excel(df_day, file_path)
-            time.sleep(0.2)
-            upload_to_drive(file_path)
 
-
-
+            date_file_paths.add(file_path)  # collect path for upload
         except Exception as e:
             print(f"❌ Error saving daily log: {e}")
+
+    # ✅ Upload only once per file
+    for path in date_file_paths:
+        time.sleep(0.2)
+        upload_to_drive(path)
+
+
 
 
 def continuous_fetch():
@@ -261,7 +267,7 @@ def continuous_fetch():
             try:
                 upload_to_drive(EXCEL_ALL_FILE)
                 today = datetime.today().strftime("%Y/%m/%d")
-                day_file = os.path.join(DATA_FOLDER, *today.split("/")) + ".xlsx"
+                day_file = os.path.join(DATA_FOLDER, *today.split("/"), f"visitor_{today.split('/')[-1]}.xlsx")
                 if os.path.exists(day_file):
                     upload_to_drive(day_file)
             except Exception as e:
@@ -279,18 +285,59 @@ def continuous_fetch():
 
         time.sleep(60)
 
+def download_from_drive(file_name):
+    try:
+        query = f"name='{file_name}' and trashed=false"
+        results = drive_service.files().list(q=query, fields="files(id)").execute()
+        files = results.get('files', [])
+        if not files:
+            print(f"⚠️ File not found on Drive: {file_name}")
+            return
+
+        file_id = files[0]['id']
+        request = drive_service.files().get_media(fileId=file_id)
+        fh = io.FileIO(file_name, 'wb')
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        print(f"⬇️ Downloaded from Drive: {file_name}")
+    except Exception as e:
+        print(f"❌ Failed to download {file_name}: {e}")
+
 
 @app.route("/dashboard")
 def dashboard():
     if "user" not in session:
         return redirect(url_for("login"))
 
-    total_visits = len(fetched_data)
+    # ✅ Sync latest files from Google Drive
+    download_from_drive("visitor_data.xlsx")
+    download_from_drive("user_data.xlsx")
+
+    # ✅ Load visitors from Excel
+    visits = []
+    if os.path.exists(EXCEL_ALL_FILE):
+        try:
+            visits = pd.read_excel(EXCEL_ALL_FILE).to_dict(orient='records')
+        except Exception as e:
+            print(f"❌ Could not read visitor file: {e}")
+
+    # ✅ Load users from Excel
+    users = []
+    if os.path.exists(EXCEL_USERS_FILE):
+        try:
+            users = pd.read_excel(EXCEL_USERS_FILE).to_dict(orient='records')
+        except Exception as e:
+            print(f"❌ Could not read user file: {e}")
+
+    total_visits = len(visits)
+    total_users = len(users)
 
     # ✅ Device type breakdown
     device_counts = {"Desktop": 0, "Mobile": 0, "Other": 0}
-    for visit in fetched_data:
-        agent = visit.get("user_agent", "").lower()
+    for visit in visits:
+        agent = str(visit.get("user_agent", "")).lower()
         if "mobile" in agent:
             device_counts["Mobile"] += 1
         elif "windows" in agent or "macintosh" in agent or "linux" in agent:
@@ -298,15 +345,11 @@ def dashboard():
         else:
             device_counts["Other"] += 1
 
-    # ✅ Load total users from Excel file
-    user_data = load_user_excel()
-    total_users = len(user_data) if user_data is not None else 0
-
     return render_template("dashboard.html",
-                           data=fetched_data,
+                           data=visits,
                            total_visits=total_visits,
-                           device_counts=device_counts,
                            total_users=total_users,
+                           device_counts=device_counts,
                            current_time=get_kolkata_time())
 
 
@@ -455,6 +498,7 @@ def download_excel():
     </html>
     """, years=years, months=months, days=days)
 
+FOLDER_ID = "1BrpKgvd2i5LSM7lmRbfb4KTyaC78gwXc"  # Your visitor_logs folder ID
 
 def file_checksum(path):
     with open(path, 'rb') as f:
@@ -462,55 +506,50 @@ def file_checksum(path):
 
 last_uploaded_checksums = {}
 
-
-
 def upload_to_drive(file_path):
-    global last_uploaded_checksums
     if drive_service is None:
         print("❌ Google Drive not initialized.")
         return
 
     try:
-        # Calculate MD5 checksum to avoid re-uploading identical files
-        checksum = file_checksum(file_path)
-        if file_path in last_uploaded_checksums and last_uploaded_checksums[file_path] == checksum:
-            print(f"🔁 No changes in {file_path}, skipping upload.")
+        if not os.path.isfile(file_path):
+            print(f"❌ File not found: {file_path}")
             return
 
-        # ✅ Fix: Get clean file name only (not full path)
-        file_name = os.path.basename(file_path).replace("'", "\\'")
+        file_name = os.path.basename(file_path)
+        current_checksum = file_checksum(file_path)
 
-        # ✅ Query Drive using only file name
-        query = f"name='{file_name}' and trashed=false"
-        response = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        # Skip if file content hasn't changed
+        if last_uploaded_checksums.get(file_name) == current_checksum:
+            print(f"🔁 Skipped (unchanged): {file_path}")
+            return
+
+        # Search for the file in the specific folder only
+        query = f"'{FOLDER_ID}' in parents and name='{file_name}' and trashed=false"
+        response = drive_service.files().list(q=query, fields="files(id)").execute()
         files = response.get('files', [])
-
-        file_metadata = {'name': os.path.basename(file_path)}
-        media = MediaFileUpload(file_path, resumable=True, chunksize=256*1024)
-
+        media = MediaFileUpload(file_path, resumable=True)
 
         if files:
-            # ✅ Fix: Force Drive to treat it as updated (set modifiedTime)
+            # Update existing file
             file_id = files[0]['id']
-            drive_service.files().update(
-                fileId=file_id,
-                media_body=media,
-                body={"modifiedTime": datetime.now(timezone.utc).isoformat()}  # 👈 KEY FIX
-            ).execute()
+            drive_service.files().update(fileId=file_id, media_body=media).execute()
             print(f"♻️ Updated: {file_path} (ID: {file_id})")
         else:
-            uploaded_file = drive_service.files().create(
-                body=file_metadata,
+            # Upload new file to specified folder
+            uploaded = drive_service.files().create(
+                body={'name': file_name, 'parents': [FOLDER_ID]},
                 media_body=media,
                 fields='id'
             ).execute()
-            print(f"✅ Uploaded: {file_path} (ID: {uploaded_file.get('id')})")
+            print(f"✅ Uploaded: {file_path} (ID: {uploaded.get('id')})")
 
-        # ✅ Save latest checksum after successful upload/update
-        last_uploaded_checksums[file_path] = checksum
+        last_uploaded_checksums[file_name] = current_checksum
 
     except Exception as e:
         print(f"❌ Upload to Drive failed: {e}")
+
+
 
 
 @app.route("/download-all")

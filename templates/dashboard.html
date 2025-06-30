@@ -24,13 +24,10 @@
   <div class="container mt-5">
     <h2 class="mb-4 text-center">📊 Admin Dashboard</h2>
 
-<!-- Total Registered Users -->
-<div class="row justify-content-center mb-5">
-  <div class="col-md-4 text-center">
-    <div class="circle bg-success">{{ total_users }}</div>
-    <h5 class="mt-3">Total Users</h5>
-  </div>
+<div class="text-center text-muted mt-4">
+  <small>Last updated: {{ current_time }}</small>
 </div>
+
 
 <div class="row justify-content-center mb-4">
   <div class="col-md-4 text-center">
@@ -42,8 +39,8 @@
     <!-- Total Visitors -->
     <div class="row justify-content-center mb-5">
       <div class="col-md-4 text-center">
-        <div class="circle">{{ total_visits }}</div>
-        <h5 class="mt-3">Total Visitors</h5>
+        <div class="circle"><span>{{ total_visits }}</span></div>
+        <h5 class="mt-3">👁️ Total Visitors</h5>
       </div>
     </div>
 
