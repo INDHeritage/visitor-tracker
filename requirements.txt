@@ -152,3 +152,4 @@ wkhtmltopdf==0.2
 xhtml2pdf==0.2.17
 XlsxWriter==3.2.3
 zope.interface==7.2
+Flask-Mail
