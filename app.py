@@ -18,9 +18,11 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import HttpRequest
 from googleapiclient.http import MediaIoBaseDownload
+from flask_mail import Mail, Message
+from apscheduler.schedulers.background import BackgroundScheduler
+
 
 os.environ['TZ'] = 'Asia/Kolkata'
-
 
 # Load environment variables
 load_dotenv()
@@ -84,6 +86,15 @@ drive_service = init_drive() # ✅ This must match what you're using in upload_t
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "default_key")
+
+# ✅ Add this block here
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.getenv("GMAIL_USER")
+app.config['MAIL_PASSWORD'] = os.getenv("GMAIL_PASS")
+mail = Mail(app)
+
 USERNAME = os.getenv("FLASK_USERNAME")
 PASSWORD = os.getenv("FLASK_PASSWORD")
 
@@ -248,6 +259,27 @@ def save_to_excel(data):
         time.sleep(0.2)
         upload_to_drive(path)
 
+def send_daily_report():
+    if not os.path.exists(EXCEL_ALL_FILE):
+        print("No file to send.")
+        return
+    try:
+        msg = Message(subject="📊 Daily Visitor Report",
+                      sender=os.getenv("GMAIL_USER"),
+                      recipients=["your_email@example.com"])
+        msg.body = "Attached is the visitor report for today."
+
+        with app.open_resource(EXCEL_ALL_FILE) as fp:
+            msg.attach("visitor_data.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fp.read())
+
+        mail.send(msg)
+        print("✅ Email sent successfully.")
+    except Exception as e:
+        print(f"❌ Failed to send email: {e}")
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(send_daily_report, 'cron', hour=19, minute=30)  # Sends at 7:30 PM daily
+scheduler.start()
 
 
 
@@ -345,12 +377,17 @@ def dashboard():
         else:
             device_counts["Other"] += 1
 
-    return render_template("dashboard.html",
-                           data=visits,
-                           total_visits=total_visits,
-                           total_users=total_users,
-                           device_counts=device_counts,
-                           current_time=get_kolkata_time())
+    today_date = datetime.now(pytz.timezone("Asia/Kolkata")).strftime('%Y-%m-%d')
+    return render_template(
+        "dashboard.html",
+        data=visits,
+        total_visits=total_visits,
+        total_users=total_users,
+        device_counts=device_counts,
+        current_time=get_kolkata_time(),
+        today_date=today_date  # 👈 ADD THIS
+    )
+
 
 
 def load_user_excel():
@@ -368,13 +405,14 @@ def get_kolkata_time():
 
 
 @app.route("/", methods=["GET"])
-@app.route("/", methods=["GET"])
 def index():
     if "user" not in session:
         return redirect(url_for("login"))
 
+    # 🧮 Count total visits
     total_visits = len(fetched_data)
 
+    # 📱 Device breakdown
     device_counts = {"Desktop": 0, "Mobile": 0, "Other": 0}
     for visit in fetched_data:
         agent = visit.get("user_agent", "").lower()
@@ -385,13 +423,20 @@ def index():
         else:
             device_counts["Other"] += 1
 
+    # ✅ Convert timestamps to strings (if needed)
+    for visit in fetched_data:
+        ts = visit.get("timestamp")
+        if isinstance(ts, datetime):
+            visit["timestamp"] = ts.strftime("%Y-%m-%d %H:%M:%S")
+
     return render_template("index.html", 
         data=fetched_data,
-        total_visits=len(fetched_data),
+        total_visits=total_visits,
         total_users=len(fetched_users),
         device_counts=device_counts,
-        current_time=get_kolkata_time()
-)
+        current_time=get_kolkata_time(),
+        today_date=datetime.now().strftime("%Y-%m-%d")  # ✅ Add this
+    )
 
 
 
