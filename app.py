@@ -277,45 +277,59 @@ def send_daily_report():
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(send_daily_report, 'cron', hour=19, minute=30)  # Sends at 7:30 PM daily
-scheduler.start()
-
 
 
 def continuous_fetch():
     global fetched_data
-    global fetched_users  # 👈 ADD THIS
+    global fetched_users
 
-    last_uploaded = None
-    while True:
-        print("⏳ Auto-fetching visitor data...")
+    print("🔍 fetched_data:", fetched_data)
+    print("🔍 fetched_users:", fetched_users)
+    print("⏰ Scheduler fetch running...")
+    print("⏳ Auto-fetching visitor data...")
+
+    try:
+        # Fetch and update visitor data
         data = fetch_data()
         if data and data != fetched_data:
             fetched_data = data
             save_to_excel(fetched_data)
+            print("✅ Visitor data updated locally.")
 
-            # ✅ Upload visitors data to Google Drive
-            try:
-                upload_to_drive(EXCEL_ALL_FILE)
-                today = datetime.today().strftime("%Y/%m/%d")
-                day_file = os.path.join(DATA_FOLDER, *today.split("/"), f"visitor_{today.split('/')[-1]}.xlsx")
-                if os.path.exists(day_file):
-                    upload_to_drive(day_file)
-            except Exception as e:
-                print(f"❌ Upload failed: {e}")
+            # Upload full visitor data
+            upload_to_drive(EXCEL_ALL_FILE)
+            print(f"📤 Uploaded: {EXCEL_ALL_FILE}")
 
-        # ✅ FETCH USERS DATA AND SAVE TO GLOBAL
+            # Upload today's log if exists
+            today = datetime.today().strftime("%Y/%m/%d")
+            day_file = os.path.join(DATA_FOLDER, *today.split("/"), f"visitor_{today.split('/')[-1]}.xlsx")
+            if os.path.exists(day_file):
+                upload_to_drive(day_file)
+                print(f"📤 Uploaded: {day_file}")
+
+        # Fetch and update user data
         users = fetch_users()
         if users:
-            fetched_users = users  # 👈 UPDATE GLOBAL VARIABLE HERE
+            fetched_users = users
             save_users_to_excel(users)
-            try:
-                upload_to_drive(EXCEL_USERS_FILE)
-            except Exception as e:
-                print(f"❌ Failed to upload users Excel: {e}")
+            upload_to_drive(EXCEL_USERS_FILE)
+            print(f"📤 Uploaded: {EXCEL_USERS_FILE}")
 
-        time.sleep(60)
+    except Exception as e:
+        print(f"❌ Error during continuous fetch: {e}")
+
+
+from apscheduler.schedulers.background import BackgroundScheduler
+
+# Start the scheduler
+scheduler = BackgroundScheduler()
+
+# Schedule tasks
+scheduler.add_job(continuous_fetch, 'interval', minutes=1, max_instances=1)
+scheduler.add_job(send_daily_report, 'cron', hour=19, minute=30)
+
+scheduler.start()
+
 
 def download_from_drive(file_name):
     try:
@@ -607,7 +621,10 @@ def download_all():
 
 
 # Start background fetch thread
-threading.Thread(target=continuous_fetch, daemon=True).start()
+# Schedule continuous fetch every 1 minute instead of using threading
+scheduler.add_job(continuous_fetch, 'interval', minutes=1)
+
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, use_reloader=False)
+
